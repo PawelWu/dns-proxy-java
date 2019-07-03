@@ -24,8 +24,8 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 
-import ru.kitsu.dnsproxy.parser.DNSParseException;
 import ru.kitsu.dnsproxy.parser.DNSMessage;
+import ru.kitsu.dnsproxy.parser.DNSParseException;
 
 /**
  * Proxy server that forwards requests to upstreams
@@ -35,7 +35,7 @@ import ru.kitsu.dnsproxy.parser.DNSMessage;
  */
 public class ProxyServer {
 	// For debugging, print requests and responses
-	private static final boolean DEBUG = false;
+	private static final boolean DEBUG = true;
 	// Maximum message should be 512 bytes
 	// We accept up to 16384 bytes just in case
 	private static final int MAX_PACKET_SIZE = 16384;
@@ -66,6 +66,7 @@ public class ProxyServer {
 	private final Thread logThread;
 	private final Thread statsThread;
 	private final List<UpstreamServer> upstreams = new ArrayList<>();
+	private final Class<UpstreamServerFilterComparator> upstreamComparatorClass;
 
 	private class ProcessingWorker implements Runnable {
 		@Override
@@ -76,13 +77,14 @@ public class ProxyServer {
 					final ProxyRequest request = inflight.peek();
 					if (request != null) {
 						long delay = request.getDeadline() - System.nanoTime();
+						log("ProcessingWorker found a request with delay " + delay);
 						// Timeout as many requests as we can
 						if (delay <= 0) {
 							inflight.remove();
 							if (request.setFinished()) {
 								// Make sure it's cancelled
-								for (int i = 0; i < upstreams.size(); ++i) {
-									upstreams.get(i).cancelRequest(request);
+								for (UpstreamServer userv : upstreams) {
+									userv.cancelRequest(request);
 								}
 								// Send to logging
 								logged.put(request);
@@ -157,8 +159,21 @@ public class ProxyServer {
 												request.getMessage());
 							}
 							inflight.add(request);
-							for (int i = 0; i < upstreams.size(); ++i) {
-								upstreams.get(i).startRequest(request);
+							
+							try {
+								upstreamComparatorClass.newInstance()
+									.filter(upstreams, request)
+									.forEach( upstreamServer -> {
+										try {
+											upstreamServer.startRequest(request);
+										} catch (InterruptedException e) {
+											e.printStackTrace();
+											// interrupted
+										}}
+								);
+
+							} catch (InstantiationException | IllegalAccessException e) {
+								throw new RuntimeException(e);
 							}
 							return null;
 						}
@@ -352,8 +367,23 @@ public class ProxyServer {
 		System.out.format("[%s] %s\n", new Date(), line);
 	}
 
-	private ProxyServer(String host, int port) throws IOException {
-		addr = new InetSocketAddress(host, port);
+	@SuppressWarnings("unchecked")
+	private ProxyServer(String upstreamServerFilterClassName, String host, int port) throws IOException {
+		try {
+			Class<?> upstreamServerFilterClass = Class.forName(upstreamServerFilterClassName);
+			if (!upstreamServerFilterClass.isAssignableFrom( UpstreamServerFilterComparator.class )) {
+				throw new IllegalArgumentException("Filter class '" + upstreamServerFilterClassName + "' has to implement interface " + UpstreamServerFilterComparator.class.getName() );
+			}
+			upstreamComparatorClass = (Class<UpstreamServerFilterComparator>) upstreamServerFilterClass;
+		} catch (ClassNotFoundException e) {
+			throw new IOException("Cannot instantiate class '" + upstreamServerFilterClassName + "'", e);
+		}
+		
+		if (null==host || host.trim().isEmpty()) {
+			addr = new InetSocketAddress(port);
+		} else {
+			addr = new InetSocketAddress(host, port);
+		}
 		if (addr.isUnresolved()) {
 			throw new IOException("Cannot resolve '" + host + "'");
 		}
@@ -368,8 +398,8 @@ public class ProxyServer {
 		statsThread = new Thread(new StatsWorker(), prefix + " stats");
 	}
 
-	public void addUpstream(String host, int port) throws IOException {
-		UpstreamServer upstream = new UpstreamServer(this, host, port);
+	public void addUpstream(UpstreamConfig config) throws IOException {
+		UpstreamServer upstream = new UpstreamServer(this, config);
 		for (UpstreamServer currentUpstream : upstreams) {
 			if (upstream.getAddr().equals(currentUpstream.getAddr()))
 				throw new IOException(
@@ -387,7 +417,7 @@ public class ProxyServer {
 		receiveThread.start();
 		sendThread.start();
 		logThread.start();
-		statsThread.start();
+//		statsThread.start();
 	}
 
 	public void stop() {
@@ -395,7 +425,7 @@ public class ProxyServer {
 		receiveThread.interrupt();
 		sendThread.interrupt();
 		logThread.interrupt();
-		statsThread.interrupt();
+//		statsThread.interrupt();
 		for (UpstreamServer upstream : upstreams) {
 			upstream.stop();
 		}
@@ -435,6 +465,7 @@ public class ProxyServer {
 	public static void main(String[] args) throws IOException,
 			InterruptedException {
 		String host = "127.0.0.1";
+		String upstreamFilterClassname = "ru.kitsu.dnsproxy.UpstreamServerFilterComparatorImpl";
 		int port = 53;
 		List<UpstreamConfig> upstreams = null;
 		for (int i = 0; i < args.length; ++i) {
@@ -449,6 +480,11 @@ public class ProxyServer {
 					usage();
 				port = Integer.parseInt(args[i]);
 				break;
+			case "-filter":
+				if (++i >= args.length)
+					usage();
+				upstreamFilterClassname = args[i];
+				break;				
 			case "-config":
 				if (++i >= args.length)
 					usage();
@@ -463,7 +499,10 @@ public class ProxyServer {
 					line = line.trim();
 					if (line.length() == 0)
 						continue;
-					upstreams.add(UpstreamConfig.parseLine(line));
+					String[] split = line.split("\\|");
+					int splitIndex = 0;
+					String suffix = split.length > 1? split[splitIndex++]: "";
+					upstreams.add(UpstreamConfig.parseLine(suffix, split[splitIndex]));
 				}
 				r.close();
 				break;
@@ -471,14 +510,15 @@ public class ProxyServer {
 				usage();
 			}
 		}
+		
 		if (upstreams == null) {
 			upstreams = new ArrayList<>();
-			upstreams.add(new UpstreamConfig("8.8.8.8"));
-			upstreams.add(new UpstreamConfig("8.8.4.4"));
+			upstreams.add(new UpstreamConfig("", "8.8.8.8"));
+			upstreams.add(new UpstreamConfig("", "8.8.4.4"));
 		}
-		ProxyServer server = new ProxyServer(host, port);
+		ProxyServer server = new ProxyServer(upstreamFilterClassname, host, port);
 		for (UpstreamConfig config : upstreams) {
-			server.addUpstream(config.getHost(), config.getPort());
+			server.addUpstream(config);
 		}
 		server.start();
 	}

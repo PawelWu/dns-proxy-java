@@ -90,4 +90,9 @@ public final class ProxyRequest {
 		finished = true;
 		return prev;
 	}
+	
+	@Override
+	public String toString() {
+		return String.format("request { address: %s, finished? %s, message: %s}", getAddr(), isFinished(), getMessage());
+	}
 }

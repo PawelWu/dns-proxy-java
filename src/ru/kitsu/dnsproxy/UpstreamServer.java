@@ -51,6 +51,7 @@ public class UpstreamServer {
 
 	private final short shuffleKey = (short) random.nextInt();
 	private short nextId = 0;
+	private UpstreamConfig config;
 
 	private class ReceiveWorker implements Runnable {
 		@Override
@@ -159,12 +160,12 @@ public class UpstreamServer {
 		}
 	}
 
-	public UpstreamServer(final ProxyServer proxyServer, final String host,
-			final int port) throws IOException {
+	public UpstreamServer(final ProxyServer proxyServer, UpstreamConfig config) throws IOException {
+		this.config = config;
 		this.proxyServer = proxyServer;
-		addr = new InetSocketAddress(host, port);
+		addr = new InetSocketAddress(config.getHost(), config.getPort());
 		if (addr.isUnresolved()) {
-			throw new IOException("Cannot resolve '" + host + "'");
+			throw new IOException("Cannot resolve '" + config.getHost() + "'");
 		}
 		socket = DatagramChannel.open(StandardProtocolFamily.INET);
 		socket.bind(null);
@@ -245,5 +246,14 @@ public class UpstreamServer {
 		inflight.remove(id);
 		accepted.remove(proxyRequest);
 		inflightCount.set(inflight.size());
+	}
+
+	public UpstreamConfig getUpstreamConfig() {
+		return config;
+	}
+	
+	@Override
+	public String toString() {
+		return "Server " + config;
 	}
 }
