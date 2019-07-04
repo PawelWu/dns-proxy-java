@@ -15,11 +15,7 @@ public class UpstreamConfig {
 	private final int port;
 	private final int index;
 
-	public UpstreamConfig(String suffix, String host) {
-		this(suffix, host, 53);
-	}
-
-	public UpstreamConfig(String suffix, String host, int port) {
+	private UpstreamConfig(String suffix, String host, int port) {
 		this.suffix = suffix;
 		this.host = host;
 		this.port = port;
@@ -42,13 +38,16 @@ public class UpstreamConfig {
 		return index;
 	}
 
-	public static UpstreamConfig parseLine(String prefix, String line) {
-		int index = line.lastIndexOf(':');
+	public static UpstreamConfig createConfig(String prefix, String host) {
+		int port;
+		int index = host.lastIndexOf(':');
 		if (index != -1) {
-			return new UpstreamConfig(prefix, line.substring(0, index),
-					Integer.parseInt(line.substring(index + 1)));
+			port = Integer.parseInt(host.substring(index + 1));
+			host = host.substring(0, index);
+		} else {
+			port = 53;
 		}
-		return new UpstreamConfig(prefix, line);
+		return new UpstreamConfig(prefix, host, port);
 	}
 	
 	@Override

@@ -16,6 +16,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.DatagramChannel;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.PriorityQueue;
@@ -371,7 +372,7 @@ public class ProxyServer {
 	private ProxyServer(String upstreamServerFilterClassName, String host, int port) throws IOException {
 		try {
 			Class<?> upstreamServerFilterClass = Class.forName(upstreamServerFilterClassName);
-			if (!upstreamServerFilterClass.isAssignableFrom( UpstreamServerFilterComparator.class )) {
+			if (!UpstreamServerFilterComparator.class.isAssignableFrom( upstreamServerFilterClass )) {
 				throw new IllegalArgumentException("Filter class '" + upstreamServerFilterClassName + "' has to implement interface " + UpstreamServerFilterComparator.class.getName() );
 			}
 			upstreamComparatorClass = (Class<UpstreamServerFilterComparator>) upstreamServerFilterClass;
@@ -462,64 +463,71 @@ public class ProxyServer {
 		System.exit(1);
 	}
 
-	public static void main(String[] args) throws IOException,
-			InterruptedException {
+	public static void main(String[] args) throws IOException  {
 		String host = "127.0.0.1";
 		String upstreamFilterClassname = "ru.kitsu.dnsproxy.UpstreamServerFilterComparatorImpl";
 		int port = 53;
-		List<UpstreamConfig> upstreams = null;
+		final List<UpstreamConfig> upstreams = new ArrayList<>();
 		for (int i = 0; i < args.length; ++i) {
 			switch (args[i]) {
-			case "-host":
-				if (++i >= args.length)
+				case "-host":
+					if (++i >= args.length)
+						usage();
+					host = args[i];
+					break;
+				case "-port":
+					if (++i >= args.length)
+						usage();
+					port = Integer.parseInt(args[i]);
+					break;
+				case "-filter":
+					if (++i >= args.length)
+						usage();
+					upstreamFilterClassname = args[i];
+					break;
+				case "-config":
+					if (++i >= args.length)
+						usage();
+					upstreams.addAll( createUpstreamsFromConfig(args[i]) );
+					break;
+				default:
 					usage();
-				host = args[i];
-				break;
-			case "-port":
-				if (++i >= args.length)
-					usage();
-				port = Integer.parseInt(args[i]);
-				break;
-			case "-filter":
-				if (++i >= args.length)
-					usage();
-				upstreamFilterClassname = args[i];
-				break;				
-			case "-config":
-				if (++i >= args.length)
-					usage();
-				BufferedReader r = new BufferedReader(new InputStreamReader(
-						new FileInputStream(args[i])));
-				upstreams = new ArrayList<>();
-				String line;
-				while (null != (line = r.readLine())) {
-					int index = line.indexOf('#');
-					if (index != -1)
-						line = line.substring(0, index);
-					line = line.trim();
-					if (line.length() == 0)
-						continue;
-					String[] split = line.split("\\|");
-					int splitIndex = 0;
-					String suffix = split.length > 1? split[splitIndex++]: "";
-					upstreams.add(UpstreamConfig.parseLine(suffix, split[splitIndex]));
+			}
+
+			if (upstreams.isEmpty()) {
+				upstreams.add(UpstreamConfig.createConfig("", "8.8.8.8"));
+				upstreams.add(UpstreamConfig.createConfig("", "8.8.4.4"));
+			}
+			ProxyServer server = new ProxyServer(upstreamFilterClassname, host, port);
+			for (UpstreamConfig config : upstreams) {
+				server.addUpstream(config);
+			}
+			server.start();
+		}
+	}
+
+	private static List<UpstreamConfig> createUpstreamsFromConfig(final String filename) throws IOException {
+		List<UpstreamConfig> upstreamConfigs = new ArrayList<>();
+		try (BufferedReader r = new BufferedReader(new InputStreamReader(
+			new FileInputStream(filename)))) {
+			String line;
+			while (null != (line = r.readLine())) {
+				int index = line.indexOf('#');
+				if (index != -1) {
+					line = line.substring(0, index);
 				}
-				r.close();
-				break;
-			default:
-				usage();
+				line = line.trim();
+				if (line.length() == 0) {
+					continue;
+				}
+				String[] split = line.split("\\|");
+				int splitIndex = 0;
+				String suffix = split.length > 1 ? split[splitIndex++] : "";
+				String upstreamHost = split[splitIndex];
+				upstreamConfigs.add(UpstreamConfig.createConfig(suffix, upstreamHost));
 			}
 		}
-		
-		if (upstreams == null) {
-			upstreams = new ArrayList<>();
-			upstreams.add(new UpstreamConfig("", "8.8.8.8"));
-			upstreams.add(new UpstreamConfig("", "8.8.4.4"));
-		}
-		ProxyServer server = new ProxyServer(upstreamFilterClassname, host, port);
-		for (UpstreamConfig config : upstreams) {
-			server.addUpstream(config);
-		}
-		server.start();
+		return upstreamConfigs;
 	}
+
 }

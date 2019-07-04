@@ -59,6 +59,7 @@ public class UpstreamServerFilterComparatorImpl implements UpstreamServerFilterC
 
     private List<UpstreamServer> serversMatchingRequest(List<UpstreamServer> upstreams) {
         return upstreams.stream()
+            .filter( upstreamServer -> !upstreamServer.getUpstreamConfig().getSuffix().isEmpty() )
             .filter( upstreamServer -> {
                 for (DNSQuestion q : request.getMessage().getQuestions()) {
                     if (q.getName().endsWith( upstreamServer.getUpstreamConfig().getSuffix() )) {
